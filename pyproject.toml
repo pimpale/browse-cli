@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "browse-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "A simple CLI tool to browse the web"
 readme = "README.md"
 license = {text = "MIT"}
@@ -14,7 +14,7 @@ authors = [
 dependencies = ["click", "playwright"]
 
 [project.urls]
-"Homepage" = "https://github.com/pimpale/foo"
+"Homepage" = "https://github.com/pimpale/browse-cli"
 
 [project.scripts]
 browse-start = "browse.cli:browse_start"
