@@ -1,9 +1,17 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Literal
-from playwright.async_api import async_playwright, Playwright, ViewportSize, BrowserContext, Page, CDPSession
+from playwright.async_api import (
+    async_playwright,
+    Playwright,
+    ViewportSize,
+    BrowserContext,
+    Page,
+    CDPSession,
+)
 from .observation_processor import get_element_center, process
 import math
+
 
 @dataclass
 class NoOpCommand:
@@ -54,13 +62,13 @@ BrowserCommand = (
 
 
 class BrowserEngine:
-    
+
     playwright: Playwright
     viewport_size: ViewportSize
     context: BrowserContext
     page: Page
     cdpsession: CDPSession
-    
+
     def __init__(self, playwright: Playwright, viewport_size: ViewportSize):
         self.playwright = playwright
         self.viewport_size = viewport_size
@@ -99,9 +107,9 @@ class BrowserEngine:
                     text += "\n"
                 await text_input.type(text, delay=100)
             case ScrollCommand(direction):
-                await self.page.evaluate(
-                    f"window.scrollBy(0, {'-100' if direction == 'up' else '100'})"
-                )
+                magnitude = self.viewport_size["height"] // 2
+                amount = -magnitude if direction == "up" else magnitude
+                await self.page.evaluate(f"window.scrollBy(0, {amount});")
             case NavigateCommand(direction):
                 match direction:
                     case "back":
@@ -123,10 +131,13 @@ class BrowserEngine:
 
         scroll_percentage = await self.scroll_percentage()
 
-        scroll_text = "You are viewing the entire page." if math.isnan(scroll_percentage) else f"You are only viewing part of the page. Scroll percentage: {scroll_percentage:.2f}%" 
+        scroll_text = (
+            "You are viewing the entire page."
+            if math.isnan(scroll_percentage)
+            else f"You are only viewing part of the page. Scroll percentage: {scroll_percentage:.2f}%"
+        )
 
         return f"{url_text}\n\n{scroll_text}\n\nPage Content:\n\n{content}"
-
 
     async def user_friendly_error(self, e: ValueError) -> str:
         observation = await self.user_friendly_observation()
