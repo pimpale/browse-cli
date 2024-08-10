@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Literal
-from playwright.async_api import async_playwright, Playwright, ViewportSize
+from playwright.async_api import async_playwright, Playwright, ViewportSize, BrowserContext, Page, CDPSession
 from .observation_processor import get_element_center, process
 import math
 
@@ -54,15 +54,22 @@ BrowserCommand = (
 
 
 class BrowserEngine:
+    
+    playwright: Playwright
+    viewport_size: ViewportSize
+    context: BrowserContext
+    page: Page
+    cdpsession: CDPSession
+    
     def __init__(self, playwright: Playwright, viewport_size: ViewportSize):
         self.playwright = playwright
         self.viewport_size = viewport_size
 
     async def setup(self):
-        self.browser = await self.playwright.chromium.launch(
+        browser = await self.playwright.chromium.launch(
             headless=True,
         )
-        self.context = await self.browser.new_context(viewport=self.viewport_size)
+        self.context = await browser.new_context(viewport=self.viewport_size)
         self.page = await self.context.new_page()
         self.cdpsession = await self.context.new_cdp_session(self.page)
 
@@ -112,11 +119,13 @@ class BrowserEngine:
     async def user_friendly_observation(self) -> str:
         content, _ = await process(self.page, self.cdpsession)
 
+        url_text = f"Viewing URL: {self.page.url }"
+
         scroll_percentage = await self.scroll_percentage()
 
         scroll_text = "You are viewing the entire page." if math.isnan(scroll_percentage) else f"You are only viewing part of the page. Scroll percentage: {scroll_percentage:.2f}%" 
 
-        return f"{scroll_text}\n\nContent:\n\n{content}"
+        return f"{url_text}\n\n{scroll_text}\n\nPage Content:\n\n{content}"
 
 
     async def user_friendly_error(self, e: ValueError) -> str:
