@@ -107,7 +107,7 @@ class BrowserEngine:
                     text += "\n"
                 await text_input.type(text, delay=100)
             case ScrollCommand(direction):
-                magnitude = self.viewport_size["height"] // 2
+                magnitude = self.viewport_size["height"]
                 amount = -magnitude if direction == "up" else magnitude
                 await self.page.evaluate(f"window.scrollBy(0, {amount});")
             case NavigateCommand(direction):
