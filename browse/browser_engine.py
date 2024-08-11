@@ -67,9 +67,7 @@ BrowserCommand = (
 
 
 class BrowserEngine:
-
     playwright: Playwright
-    viewport_size: ViewportSize
     context: BrowserContext
     page: Page
     cdpsession: CDPSession
@@ -118,7 +116,8 @@ class BrowserEngine:
                 await text_input.clear()
                 await text_input.type(text, delay=100)
             case ScrollCommand(direction):
-                magnitude = self.viewport_size["height"]
+                assert self.page.viewport_size is not None
+                magnitude = self.page.viewport_size["height"]
                 amount = -magnitude if direction == "up" else magnitude
                 await self.page.evaluate(f"window.scrollBy(0, {amount});")
             case NavigateCommand(direction):
