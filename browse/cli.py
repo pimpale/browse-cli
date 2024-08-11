@@ -26,9 +26,7 @@ SERVER_ADDRESS = ("localhost", 6000)
 async def browse_start_async() -> None:
     with Listener(SERVER_ADDRESS) as listener:
         async with async_api.async_playwright() as playwright:
-            browser = BrowserEngine(
-                playwright, viewport_size={"width": 800, "height": 800}
-            )
+            browser = BrowserEngine(playwright)
             await browser.setup()
             while True:
                 with listener.accept() as conn:
@@ -41,7 +39,9 @@ async def browse_start_async() -> None:
                         t0 = time.time()
                         print("Generating user-friendly observation")
                         obs = await browser.user_friendly_observation()
-                        print(f"User-friendly observation generated in {time.time() - t0:.2f} seconds")
+                        print(
+                            f"User-friendly observation generated in {time.time() - t0:.2f} seconds"
+                        )
                     except ValueError as e:
                         obs = await browser.user_friendly_error(e)
 
