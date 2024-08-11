@@ -27,7 +27,7 @@ async def browse_start_async() -> None:
     with Listener(SERVER_ADDRESS) as listener:
         async with async_api.async_playwright() as playwright:
             browser = BrowserEngine(
-                playwright, viewport_size={"width": 768, "height": 1366}
+                playwright, viewport_size={"width": 800, "height": 800}
             )
             await browser.setup()
             while True:

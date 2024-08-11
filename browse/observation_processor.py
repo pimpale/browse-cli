@@ -176,6 +176,7 @@ class ObsNode:
     depth: int
     role: str
     name: str
+    editable: bool
     properties: list[str]
     backend_id: int | None
 
@@ -183,6 +184,7 @@ class ObsNode:
 IGNORED_ACTREE_PROPERTIES = (
     "focusable",
     "editable",
+    "required",
     "readonly",
     "level",
     "settable",
@@ -213,8 +215,11 @@ async def parse_accessibility_tree(
             return None, maybe_children
 
         properties = []
+        editable = False
         for property in node.get("properties", []):
             try:
+                if property["name"] == "editable":
+                    editable = True
                 if property["name"] in IGNORED_ACTREE_PROPERTIES:
                     continue
                 properties.append(f'{property["name"]}: {property["value"]["value"]}')
@@ -225,6 +230,7 @@ async def parse_accessibility_tree(
             depth=depth,
             role=role,
             name=name,
+            editable=editable,
             backend_id=node.get("backendDOMNodeId", None),
             properties=properties,
         )
@@ -297,6 +303,7 @@ async def parse_accessibility_tree(
 
     return await dfs(0, 0)
 
+
 def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
     """Stringify the observation nodes info"""
     tree_str = ""
@@ -304,11 +311,16 @@ def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
     prev_fusable = False
     for i, v in enumerate(obs_nodes_info):
 
-        if v.depth == depth and prev_fusable and v.role in ["StaticText", "link"] and len(v.properties) == 0:
+        if (
+            v.depth == depth
+            and prev_fusable
+            and v.role in ["StaticText", "link"]
+            and len(v.properties) == 0
+        ):
             # add space between fusable nodes if they are not already separated by space
             if tree_str[-1] != " " and v.name != "" and v.name[0] != " ":
                 tree_str += " "
-                
+
             if v.role == "StaticText":
                 tree_str += f"{v.name}"
             else:
@@ -325,13 +337,13 @@ def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
                 role_str = f"{v.role}: "
                 name_str = f"'{v.name}'"
                 property_str = " ".join(v.properties) if v.properties else ""
-                tree_str += f"\n{indent_str}{id_str}{role_str}{name_str}{property_str}"
-            
+                editable_str = " <editable>" if v.editable else ""
+                tree_str += f"\n{indent_str}{editable_str}{id_str}{role_str}{name_str}{property_str}"
+
             depth = v.depth
             prev_fusable = v.role in ["StaticText", "link"] and len(v.properties) == 0
-    
+
     return tree_str
-        
 
 
 def tree_loaded_successfully(accessibility_tree: AccessibilityTree) -> bool:

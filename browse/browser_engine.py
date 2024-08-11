@@ -76,7 +76,7 @@ class BrowserEngine:
 
     async def setup(self):
         browser = await self.playwright.chromium.launch(
-            headless=True,
+            headless=False,
         )
         self.context = await browser.new_context(viewport=self.viewport_size)
         self.page = await self.context.new_page()
