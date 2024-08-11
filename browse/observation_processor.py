@@ -261,6 +261,7 @@ async def parse_accessibility_tree(
                     "Legend",
                     "listitem",
                     "ListMarker",
+                    "superscript",
                 ]:
                     maybe_node = None
             elif role in ["listitem"]:
@@ -296,22 +297,37 @@ async def parse_accessibility_tree(
 
     return await dfs(0, 0)
 
-
-def obs_node_to_str(i: int, v: ObsNode) -> str:
-    indent_str = "\t" * v.depth
-
-    plaintext = v.role == "StaticText"
-
-    id_str = "" if plaintext else f"[{i}] "
-    role_str = "" if plaintext else f"{v.role} "
-    name_str = f"{v.name}" if plaintext else f"'{v.name}' "
-    property_str = " ".join(v.properties) if v.properties else ""
-    return f"{indent_str}{id_str}{role_str}{name_str}{property_str}".rstrip()
-
-
 def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
     """Stringify the observation nodes info"""
-    return "\n".join([obs_node_to_str(i, v) for i, v in enumerate(obs_nodes_info)])
+    tree_str = ""
+    depth = 0
+    prev_fusable = False
+    for i, v in enumerate(obs_nodes_info):
+
+        if v.depth == depth and prev_fusable and v.role in ["StaticText", "link"] and len(v.properties) == 0:
+            if v.role == "StaticText":
+                tree_str += f"{v.name} "
+            else:
+                tree_str += f"[{v.name}]({i}) "
+        else:
+            indent_str = "\t" * v.depth
+
+            if v.role == "StaticText":
+                tree_str += f"\n{indent_str}{v.name} "
+            elif v.role == "link":
+                tree_str += f"\n{indent_str}[{v.name}]({i}) "
+            else:
+                id_str = f"({i}) "
+                role_str = f"{v.role}: "
+                name_str = f"'{v.name}'"
+                property_str = " ".join(v.properties) if v.properties else ""
+                tree_str += f"\n{indent_str}{id_str}{role_str}{name_str}{property_str}"
+            
+            depth = v.depth
+            prev_fusable = v.role in ["StaticText", "link"] and len(v.properties) == 0
+    
+    return tree_str
+        
 
 
 def tree_loaded_successfully(accessibility_tree: AccessibilityTree) -> bool:
