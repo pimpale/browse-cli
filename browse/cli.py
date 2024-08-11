@@ -27,7 +27,7 @@ async def browse_start_async() -> None:
     with Listener(SERVER_ADDRESS) as listener:
         async with async_api.async_playwright() as playwright:
             browser = BrowserEngine(
-                playwright, viewport_size={"width": 1366, "height": 768}
+                playwright, viewport_size={"width": 768, "height": 1366}
             )
             await browser.setup()
             while True:
@@ -89,11 +89,12 @@ def browse_click(id: int) -> None:
 @click.command()
 @click.argument("id", type=int)
 @click.argument("text")
-def browse_type(id: int, text: str) -> None:
-    """Types the text TEXT in the element ID. Surround your text in quotes. Make sure to include a \n at the end if you want to press enter."""
+@click.option("--enter", is_flag=True, help="Press enter after typing.")
+def browse_type(id: int, text: str, enter: bool) -> None:
+    """Types the text TEXT in the element ID. Surround TEXT in quotes."""
     # browse_start_nohup()
     with Client(SERVER_ADDRESS) as conn:
-        conn.send(TypeCommand(id, text))
+        conn.send(TypeCommand(id, text, enter))
         click.echo(conn.recv())
 
 

@@ -32,6 +32,7 @@ class ClickCommand:
 class TypeCommand:
     id: int
     text: str
+    enter: bool
 
 
 @dataclass
@@ -95,7 +96,9 @@ class BrowserEngine:
                 x, y = await get_element_center(self.last_observation, id, self.cdpsession)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)
-            case TypeCommand(id, text):
+            case TypeCommand(id, text, enter):
+                if enter:
+                    text += "\n"
                 x, y = await get_element_center(self.last_observation, id, self.cdpsession)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)

@@ -306,7 +306,7 @@ def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
 
         if v.depth == depth and prev_fusable and v.role in ["StaticText", "link"] and len(v.properties) == 0:
             # add space between fusable nodes if they are not already separated by space
-            if tree_str[-1] != " " and v.name[0] != " ":
+            if tree_str[-1] != " " and v.name != "" and v.name[0] != " ":
                 tree_str += " "
                 
             if v.role == "StaticText":
