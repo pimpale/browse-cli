@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, TypedDict, Union
+from typing import Any, Dict, NotRequired, TypedDict, Union
 
 @dataclass
 class DetachedPage:
@@ -16,7 +16,7 @@ class AccessibilityTreeNode(TypedDict):
     properties: list[dict[str, Any]]
     childIds: list[str]
     parentId: str
-    backendDOMNodeId: str
+    backendDOMNodeId: NotRequired[int]
     frameId: str
     bound: list[float] | None
     union_bound: list[float] | None

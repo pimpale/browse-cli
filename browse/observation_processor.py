@@ -1,3 +1,4 @@
+import asyncio
 from playwright.async_api import Page, CDPSession, ViewportSize
 from typing import Any, TypedDict
 import re
@@ -8,6 +9,8 @@ from .utils import (
     BrowserInfo,
     DOMNode,
 )
+import time
+
 
 IGNORED_ACTREE_PROPERTIES = (
     "focusable",
@@ -76,11 +79,11 @@ async def fetch_browser_info(
 
 
 async def get_bounding_client_rect(
-    client: CDPSession, backend_node_id: str
-) -> dict[str, Any]:
+    client: CDPSession, backend_node_id: int
+) -> list[float] | None:
     try:
         remote_object = await client.send(
-            "DOM.resolveNode", {"backendNodeId": int(backend_node_id)}
+            "DOM.resolveNode", {"backendNodeId": backend_node_id}
         )
         remote_object_id = remote_object["object"]["objectId"]
         response = await client.send(
@@ -103,9 +106,31 @@ async def get_bounding_client_rect(
                 "returnByValue": True,
             },
         )
-        return response
+        x = response["result"]["value"]["x"]
+        y = response["result"]["value"]["y"]
+        width = response["result"]["value"]["width"]
+        height = response["result"]["value"]["height"]
+
+        union_bound = [x, y, width, height]
+
+        return union_bound
     except Exception:
-        return {"result": {"subtype": "error"}}
+        return None
+
+
+async def get_bounding_client_rect2(
+    client: CDPSession, backend_node_id: int
+) -> list[float] | None:
+    try:
+        boxmodel = await client.send("DOM.getBoxModel", {"backendNodeId": backend_node_id})
+        x = boxmodel["model"]["padding"][0]
+        y = boxmodel["model"]["padding"][1]
+        width = boxmodel["model"]["width"]
+        height = boxmodel["model"]["height"]
+        union_bound = [x, y, width, height]
+        return union_bound
+    except Exception:
+        return None
 
 
 def get_element_in_viewport_ratio(
@@ -143,9 +168,11 @@ async def fetch_page_accessibility_tree(
     client: CDPSession,
     current_viewport_only: bool,
 ) -> AccessibilityTree:
+    t0 = time.time()
     accessibility_tree: AccessibilityTree = (
         await client.send("Accessibility.getFullAXTree", {})
     )["nodes"]
+    print(f"Accessibility.getFullAXTree: {time.time() - t0}")
 
     # a few nodes are repeated in the accessibility tree
     seen_ids = set()
@@ -159,24 +186,25 @@ async def fetch_page_accessibility_tree(
     nodeid_to_cursor = {}
     for cursor, node in enumerate(accessibility_tree):
         nodeid_to_cursor[node["nodeId"]] = cursor
-        # usually because the node is not visible etc
+
+    async def update_union_bound(node: AccessibilityTreeNode) -> None:
         if "backendDOMNodeId" not in node:
             node["union_bound"] = None
-            continue
-        backend_node_id = str(node["backendDOMNodeId"])
+            return
+        backend_node_id = node["backendDOMNodeId"]
         if node["role"]["value"] == "RootWebArea":
             # always inside the viewport
             node["union_bound"] = [0.0, 0.0, 10.0, 10.0]
         else:
-            response = await get_bounding_client_rect(client, backend_node_id)
-            if response.get("result", {}).get("subtype", "") == "error":
-                node["union_bound"] = None
-            else:
-                x = response["result"]["value"]["x"]
-                y = response["result"]["value"]["y"]
-                width = response["result"]["value"]["width"]
-                height = response["result"]["value"]["height"]
-                node["union_bound"] = [x, y, width, height]
+            # print("v1", await get_bounding_client_rect(client, backend_node_id))
+            # print("v2", await get_bounding_client_rect2(client, backend_node_id))
+            
+            node["union_bound"] = await get_bounding_client_rect2(client, backend_node_id)
+
+    t1 = time.time()
+    await asyncio.gather(*[update_union_bound(node) for node in accessibility_tree])
+    # [await update_union_bound(node) for node in accessibility_tree]
+    print(f"update_union_bound: {time.time() - t1}")
 
     # filter nodes that are not in the current viewport
     if current_viewport_only:
@@ -240,7 +268,7 @@ async def fetch_page_accessibility_tree(
 
 
 class ObsNode(TypedDict):
-    backend_id: str
+    backend_id: int | None
     union_bound: list[float] | None
     text: str
 
@@ -308,7 +336,7 @@ def parse_accessibility_tree(
             if valid_node:
                 tree_str += f"{indent}{node_str}"
                 obs_nodes_info[obs_node_id] = {
-                    "backend_id": node["backendDOMNodeId"],
+                    "backend_id": node.get("backendDOMNodeId", None),
                     "union_bound": node["union_bound"],
                     "text": node_str,
                 }
@@ -365,15 +393,22 @@ def tree_loaded_successfully(accessibility_tree: AccessibilityTree) -> bool:
 
 
 async def process(page: Page, client: CDPSession) -> tuple[str, ObsNodesInfo]:
+    t0 = time.time()
     browser_info = await fetch_browser_info(page, client)
+    print(f"fetch_browser_info: {time.time() - t0}")
 
     # wait until content is not busy anymore
+    t1 = time.time()
+    iter = 0
     while True:
         accessibility_tree = await fetch_page_accessibility_tree(
             browser_info,
             client,
             CURRENT_VIEWPORT_ONLY,
         )
+
+        print(f"fetch_page_accessibility_tree ({iter}): {time.time() - t1}")
+        iter += 1
 
         # check if the tree is loaded successfully
         if tree_loaded_successfully(accessibility_tree):
@@ -382,7 +417,9 @@ async def process(page: Page, client: CDPSession) -> tuple[str, ObsNodesInfo]:
             # wait for a while
             await page.wait_for_timeout(100)
 
+    t2 = time.time()
     content, obs_nodes_info = parse_accessibility_tree(accessibility_tree)
+    print(f"parse_accessibility_tree: {time.time() - t2}")
 
     return (clean_accesibility_tree(content), obs_nodes_info)
 

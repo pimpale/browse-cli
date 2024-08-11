@@ -82,18 +82,20 @@ class BrowserEngine:
         self.cdpsession = await self.context.new_cdp_session(self.page)
 
     async def do(self, command: BrowserCommand):
-        content, obs_nodes = await process(self.page, self.cdpsession)
-        print(content)
         match command:
             case NoOpCommand():
                 pass
             case GotoCommand(url):
                 await self.page.goto(url)
             case ClickCommand(id):
+                _, obs_nodes = await process(self.page, self.cdpsession)
+                
                 x, y = get_element_center(obs_nodes, id)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)
             case TypeCommand(id, text, enter):
+                _, obs_nodes = await process(self.page, self.cdpsession)
+
                 x, y = get_element_center(obs_nodes, id)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)
@@ -124,7 +126,7 @@ class BrowserEngine:
             "(document.documentElement.scrollTop + document.body.scrollTop) / (document.documentElement.scrollHeight - document.documentElement.clientHeight) * 100"
         )
 
-    async def user_friendly_observation(self) -> str:
+    async def user_friendly_observation(self) -> str:        
         content, _ = await process(self.page, self.cdpsession)
 
         url_text = f"Viewing URL: {self.page.url }"

@@ -34,12 +34,20 @@ async def browse_start_async() -> None:
                 with listener.accept() as conn:
                     try:
                         command: BrowserCommand = conn.recv()
+                        t0 = time.time()
+                        print(f"Received command: {command}")
                         await browser.do(command)
+                        print(f"Command executed in {time.time() - t0:.2f} seconds")
+                        t0 = time.time()
+                        print("Generating user-friendly observation")
                         obs = await browser.user_friendly_observation()
+                        print(f"User-friendly observation generated in {time.time() - t0:.2f} seconds")
                     except ValueError as e:
                         obs = await browser.user_friendly_error(e)
 
+                    t0 = time.time()
                     conn.send(obs)
+                    print(f"Observation sent in {time.time() - t0:.2f} seconds")
 
 
 @click.command()
