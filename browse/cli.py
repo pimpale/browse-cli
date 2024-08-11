@@ -77,8 +77,8 @@ def browse_goto(url: str) -> None:
 
 
 @click.command()
-@click.argument("id")
-def browse_click(id: str) -> None:
+@click.argument("id", type=int)
+def browse_click(id: int) -> None:
     """Clicks on the element ID"""
     # browse_start_nohup()
     with Client(SERVER_ADDRESS) as conn:
@@ -87,14 +87,13 @@ def browse_click(id: str) -> None:
 
 
 @click.command()
-@click.argument("id")
+@click.argument("id", type=int)
 @click.argument("text")
-@click.option("--enter", is_flag=True)
-def browse_type(id: str, text: str, enter: bool) -> None:
-    """Types the text TEXT in the element ID"""
+def browse_type(id: int, text: str) -> None:
+    """Types the text TEXT in the element ID. Surround your text in quotes. Make sure to include a \n at the end if you want to press enter."""
     # browse_start_nohup()
     with Client(SERVER_ADDRESS) as conn:
-        conn.send(TypeCommand(id, text, enter))
+        conn.send(TypeCommand(id, text))
         click.echo(conn.recv())
 
 

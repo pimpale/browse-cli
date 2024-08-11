@@ -1,6 +1,7 @@
 import asyncio
+from dataclasses import dataclass
 from playwright.async_api import Page, CDPSession, ViewportSize
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict
 import re
 from .utils import (
     AccessibilityTree,
@@ -10,22 +11,6 @@ from .utils import (
     DOMNode,
 )
 import time
-
-
-IGNORED_ACTREE_PROPERTIES = (
-    "focusable",
-    "editable",
-    "readonly",
-    "level",
-    "settable",
-    "multiline",
-    "invalid",
-)
-
-
-IN_VIEWPORT_RATIO_THRESHOLD = 0.6
-
-CURRENT_VIEWPORT_ONLY = True
 
 
 async def fetch_browser_info(
@@ -122,7 +107,9 @@ async def get_bounding_client_rect2(
     client: CDPSession, backend_node_id: int
 ) -> list[float] | None:
     try:
-        boxmodel = await client.send("DOM.getBoxModel", {"backendNodeId": backend_node_id})
+        boxmodel = await client.send(
+            "DOM.getBoxModel", {"backendNodeId": backend_node_id}
+        )
         x = boxmodel["model"]["padding"][0]
         y = boxmodel["model"]["padding"][1]
         width = boxmodel["model"]["width"]
@@ -163,10 +150,8 @@ def get_element_in_viewport_ratio(
     return ratio
 
 
-async def fetch_page_accessibility_tree(
-    info: BrowserInfo,
+async def fetch_accessibility_tree(
     client: CDPSession,
-    current_viewport_only: bool,
 ) -> AccessibilityTree:
     t0 = time.time()
     accessibility_tree: AccessibilityTree = (
@@ -183,204 +168,150 @@ async def fetch_page_accessibility_tree(
             seen_ids.add(node["nodeId"])
     accessibility_tree = _accessibility_tree
 
-    nodeid_to_cursor = {}
-    for cursor, node in enumerate(accessibility_tree):
-        nodeid_to_cursor[node["nodeId"]] = cursor
-
-    async def update_union_bound(node: AccessibilityTreeNode) -> None:
-        if "backendDOMNodeId" not in node:
-            node["union_bound"] = None
-            return
-        backend_node_id = node["backendDOMNodeId"]
-        if node["role"]["value"] == "RootWebArea":
-            # always inside the viewport
-            node["union_bound"] = [0.0, 0.0, 10.0, 10.0]
-        else:
-            # print("v1", await get_bounding_client_rect(client, backend_node_id))
-            # print("v2", await get_bounding_client_rect2(client, backend_node_id))
-            
-            node["union_bound"] = await get_bounding_client_rect2(client, backend_node_id)
-
-    t1 = time.time()
-    await asyncio.gather(*[update_union_bound(node) for node in accessibility_tree])
-    # [await update_union_bound(node) for node in accessibility_tree]
-    print(f"update_union_bound: {time.time() - t1}")
-
-    # filter nodes that are not in the current viewport
-    if current_viewport_only:
-
-        def remove_node_in_graph(node: AccessibilityTreeNode) -> None:
-            # update the node information in the accessibility tree
-            nodeid = node["nodeId"]
-            node_cursor = nodeid_to_cursor[nodeid]
-            parent_nodeid = node["parentId"]
-            children_nodeids = node["childIds"]
-            parent_cursor = nodeid_to_cursor[parent_nodeid]
-            # update the children of the parent node
-            assert accessibility_tree[parent_cursor].get("parentId", "Root") is not None
-            # remove the nodeid from parent's childIds
-            index = accessibility_tree[parent_cursor]["childIds"].index(nodeid)
-            accessibility_tree[parent_cursor]["childIds"].pop(index)
-            # Insert children_nodeids in the same location
-            for child_nodeid in children_nodeids:
-                accessibility_tree[parent_cursor]["childIds"].insert(
-                    index, child_nodeid
-                )
-                index += 1
-            # update children node's parent
-            for child_nodeid in children_nodeids:
-                child_cursor = nodeid_to_cursor[child_nodeid]
-                accessibility_tree[child_cursor]["parentId"] = parent_nodeid
-            # mark as removed
-            accessibility_tree[node_cursor]["parentId"] = "[REMOVED]"
-
-        config = info["config"]
-        for node in accessibility_tree:
-            if not node["union_bound"]:
-                remove_node_in_graph(node)
-                continue
-
-            [x, y, width, height] = node["union_bound"]
-
-            # invisible node
-            if width == 0 or height == 0:
-                remove_node_in_graph(node)
-                continue
-
-            in_viewport_ratio = get_element_in_viewport_ratio(
-                elem_left_bound=float(x),
-                elem_top_bound=float(y),
-                width=float(width),
-                height=float(height),
-                config=config,
-            )
-
-            if in_viewport_ratio < IN_VIEWPORT_RATIO_THRESHOLD:
-                remove_node_in_graph(node)
-
-        accessibility_tree = [
-            node
-            for node in accessibility_tree
-            if node.get("parentId", "Root") != "[REMOVED]"
-        ]
-
     return accessibility_tree
 
 
-class ObsNode(TypedDict):
+@dataclass
+class ObsNode:
+    depth: int
+    role: str
+    name: str
+    properties: list[str]
     backend_id: int | None
-    union_bound: list[float] | None
-    text: str
 
 
-ObsNodesInfo = dict[str, ObsNode]
+IGNORED_ACTREE_PROPERTIES = (
+    "focusable",
+    "editable",
+    "readonly",
+    "level",
+    "settable",
+    "multiline",
+    "invalid",
+)
 
 
-def parse_accessibility_tree(
+async def parse_accessibility_tree(
+    browser_info: BrowserInfo,
     accessibility_tree: AccessibilityTree,
-) -> tuple[str, ObsNodesInfo]:
+    client: CDPSession,
+) -> list[ObsNode]:
     """Parse the accessibility tree into a string text"""
     node_id_to_idx: dict[str, int] = {}
     for idx, node in enumerate(accessibility_tree):
         node_id_to_idx[node["nodeId"]] = idx
 
-    obs_nodes_info: ObsNodesInfo = {}
+    async def convert_node(
+        depth: int, node: AccessibilityTreeNode
+    ) -> tuple[Optional[ObsNode], Optional[list[str]]]:
+        maybe_children = node.get("childIds", None)
 
-    def dfs(idx: int, obs_node_id: str, depth: int) -> str:
-        tree_str = ""
-        node = accessibility_tree[idx]
-        indent = "\t" * depth
-        valid_node = True
+        role = node["role"]["value"]
         try:
-            role = node["role"]["value"]
             name = node["name"]["value"]
-            node_str = f"[{obs_node_id}] {role} {repr(name)}"
-            properties = []
-            for property in node.get("properties", []):
-                try:
-                    if property["name"] in IGNORED_ACTREE_PROPERTIES:
-                        continue
-                    properties.append(
-                        f'{property["name"]}: {property["value"]["value"]}'
-                    )
-                except KeyError:
-                    pass
+        except KeyError:
+            return None, maybe_children
 
-            if properties:
-                node_str += " " + " ".join(properties)
+        properties = []
+        for property in node.get("properties", []):
+            try:
+                if property["name"] in IGNORED_ACTREE_PROPERTIES:
+                    continue
+                properties.append(f'{property["name"]}: {property["value"]["value"]}')
+            except KeyError:
+                pass
 
-            # check valid
-            if not node_str.strip():
-                valid_node = False
+        maybe_node = ObsNode(
+            depth=depth,
+            role=role,
+            name=name,
+            backend_id=node.get("backendDOMNodeId", None),
+            properties=properties,
+        )
 
-            # empty generic node
-            if not name.strip():
-                if not properties:
-                    if role in [
-                        "generic",
-                        "img",
-                        "list",
-                        "strong",
-                        "paragraph",
-                        "banner",
-                        "navigation",
-                        "Section",
-                        "LabelText",
-                        "Legend",
-                        "listitem",
-                    ]:
-                        valid_node = False
-                elif role in ["listitem"]:
-                    valid_node = False
+        union_bound = (
+            await get_bounding_client_rect(client, node["backendDOMNodeId"])
+            if "backendDOMNodeId" in node
+            else None
+        )
+        if union_bound is None:
+            return None, maybe_children
+        x, y, width, height = union_bound
+        if width == 0 or height == 0:
+            return None, None
+        in_viewport_ratio = get_element_in_viewport_ratio(
+            x, y, width, height, browser_info["config"]
+        )
+        if in_viewport_ratio == 0:
+            return None, None
 
-            if valid_node:
-                tree_str += f"{indent}{node_str}"
-                obs_nodes_info[obs_node_id] = {
-                    "backend_id": node.get("backendDOMNodeId", None),
-                    "union_bound": node["union_bound"],
-                    "text": node_str,
-                }
+        # empty generic node
+        if not name.strip():
+            if not properties:
+                if role in [
+                    "generic",
+                    "img",
+                    "list",
+                    "strong",
+                    "paragraph",
+                    "banner",
+                    "navigation",
+                    "Section",
+                    "LabelText",
+                    "Legend",
+                    "listitem",
+                    "ListMarker",
+                ]:
+                    maybe_node = None
+            elif role in ["listitem"]:
+                maybe_node = None
 
-        except Exception:
-            valid_node = False
+        # don't descend into these nodes
+        # * link typically just contains statictext with the link text
+        if role in ["link", "heading"]:
+            maybe_children = None
 
-        for _, child_node_id in enumerate(node["childIds"]):
-            if child_node_id not in node_id_to_idx:
-                continue
-            # mark this to save some tokens
-            child_depth = depth + 1 if valid_node else depth
-            child_str = dfs(node_id_to_idx[child_node_id], child_node_id, child_depth)
-            if child_str.strip():
-                if tree_str.strip():
-                    tree_str += "\n"
-                tree_str += child_str
+        return maybe_node, maybe_children
 
-        return tree_str
+    async def dfs(idx: int, depth: int) -> list[ObsNode]:
+        obs_nodes_info: list[ObsNode] = []
 
-    tree_str = dfs(0, accessibility_tree[0]["nodeId"], 0)
-    return tree_str, obs_nodes_info
+        maybe_node, maybe_children = await convert_node(depth, accessibility_tree[idx])
+
+        if maybe_node is not None:
+            obs_nodes_info.append(maybe_node)
+
+        if maybe_children is not None:
+            child_depth = depth + 1 if maybe_node is not None else depth
+            child_nodes = [
+                await dfs(node_id_to_idx[child_node_id], child_depth)
+                for child_node_id in maybe_children
+                if child_node_id in node_id_to_idx
+            ]
+            # child_nodes = await asyncio.gather(*child_nodes)
+            for child_node in child_nodes:
+                obs_nodes_info.extend(child_node)
+
+        return obs_nodes_info
+
+    return await dfs(0, 0)
 
 
-def clean_accesibility_tree(tree_str: str) -> str:
-    """further clean accesibility tree"""
-    clean_lines: list[str] = []
-    for line in tree_str.split("\n"):
-        # remove statictext if the content already appears in the previous line
-        if "statictext" in line.lower():
-            prev_lines = clean_lines[-3:]
-            pattern = r"\[\d+\] StaticText (.+)"
+def obs_node_to_str(i: int, v: ObsNode) -> str:
+    indent_str = "\t" * v.depth
 
-            match = re.search(pattern, line, re.DOTALL)
-            if match:
-                static_text = match.group(1)[1:-1]  # remove the quotes
-                if static_text and all(
-                    static_text not in prev_line for prev_line in prev_lines
-                ):
-                    clean_lines.append(line)
-        else:
-            clean_lines.append(line)
+    plaintext = v.role == "StaticText"
 
-    return "\n".join(clean_lines)
+    id_str = "" if plaintext else f"[{i}] "
+    role_str = "" if plaintext else f"{v.role} "
+    name_str = f"{v.name}" if plaintext else f"'{v.name}' "
+    property_str = " ".join(v.properties) if v.properties else ""
+    return f"{indent_str}{id_str}{role_str}{name_str}{property_str}".rstrip()
+
+
+def obs_nodes_to_str(obs_nodes_info: list[ObsNode]) -> str:
+    """Stringify the observation nodes info"""
+    return "\n".join([obs_node_to_str(i, v) for i, v in enumerate(obs_nodes_info)])
 
 
 def tree_loaded_successfully(accessibility_tree: AccessibilityTree) -> bool:
@@ -392,23 +323,12 @@ def tree_loaded_successfully(accessibility_tree: AccessibilityTree) -> bool:
     return busy_attr is None
 
 
-async def process(page: Page, client: CDPSession) -> tuple[str, ObsNodesInfo]:
-    t0 = time.time()
+async def process(page: Page, client: CDPSession) -> list[ObsNode]:
     browser_info = await fetch_browser_info(page, client)
-    print(f"fetch_browser_info: {time.time() - t0}")
-
-    # wait until content is not busy anymore
-    t1 = time.time()
-    iter = 0
     while True:
-        accessibility_tree = await fetch_page_accessibility_tree(
-            browser_info,
+        accessibility_tree = await fetch_accessibility_tree(
             client,
-            CURRENT_VIEWPORT_ONLY,
         )
-
-        print(f"fetch_page_accessibility_tree ({iter}): {time.time() - t1}")
-        iter += 1
 
         # check if the tree is loaded successfully
         if tree_loaded_successfully(accessibility_tree):
@@ -417,21 +337,21 @@ async def process(page: Page, client: CDPSession) -> tuple[str, ObsNodesInfo]:
             # wait for a while
             await page.wait_for_timeout(100)
 
-    t2 = time.time()
-    content, obs_nodes_info = parse_accessibility_tree(accessibility_tree)
-    print(f"parse_accessibility_tree: {time.time() - t2}")
-
-    return (clean_accesibility_tree(content), obs_nodes_info)
+    return await parse_accessibility_tree(browser_info, accessibility_tree, client)
 
 
-def get_element_center(
-    obs_nodes_info: ObsNodesInfo, element_id: str
+async def get_element_center(
+    obs_nodes_info: list[ObsNode], element_id: int, client: CDPSession
 ) -> tuple[float, float]:
     try:
         node_info = obs_nodes_info[element_id]
-    except KeyError:
+    except IndexError:
         raise ValueError(f"Element with id {element_id} not found")
-    node_bound = node_info["union_bound"]
+
+    if node_info.backend_id is None:
+        raise ValueError("Node backend_id is None")
+
+    node_bound = await get_bounding_client_rect(client, node_info.backend_id)
     if node_bound is None:
         raise ValueError("Node bound is None")
     x, y, width, height = node_bound

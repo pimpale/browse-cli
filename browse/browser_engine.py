@@ -9,7 +9,7 @@ from playwright.async_api import (
     Page,
     CDPSession,
 )
-from .observation_processor import get_element_center, process
+from .observation_processor import ObsNode, get_element_center, obs_nodes_to_str, process
 import math
 
 
@@ -25,14 +25,13 @@ class GotoCommand:
 
 @dataclass
 class ClickCommand:
-    id: str
+    id: int
 
 
 @dataclass
 class TypeCommand:
-    id: str
+    id: int
     text: str
-    enter: bool
 
 
 @dataclass
@@ -68,6 +67,7 @@ class BrowserEngine:
     context: BrowserContext
     page: Page
     cdpsession: CDPSession
+    last_observation: list[ObsNode]
 
     def __init__(self, playwright: Playwright, viewport_size: ViewportSize):
         self.playwright = playwright
@@ -80,23 +80,23 @@ class BrowserEngine:
         self.context = await browser.new_context(viewport=self.viewport_size)
         self.page = await self.context.new_page()
         self.cdpsession = await self.context.new_cdp_session(self.page)
+        self.last_observation = await process(self.page, self.cdpsession)
 
     async def do(self, command: BrowserCommand):
         match command:
             case NoOpCommand():
                 pass
             case GotoCommand(url):
-                await self.page.goto(url)
+                try:
+                    await self.page.goto(url)
+                except Exception as e:
+                    raise ValueError(f"Failed to navigate to {url}: {e}")
             case ClickCommand(id):
-                _, obs_nodes = await process(self.page, self.cdpsession)
-                
-                x, y = get_element_center(obs_nodes, id)
+                x, y = await get_element_center(self.last_observation, id, self.cdpsession)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)
-            case TypeCommand(id, text, enter):
-                _, obs_nodes = await process(self.page, self.cdpsession)
-
-                x, y = get_element_center(obs_nodes, id)
+            case TypeCommand(id, text):
+                x, y = await get_element_center(self.last_observation, id, self.cdpsession)
                 await self.page.mouse.move(x, y, steps=20)
                 await self.page.mouse.click(x, y)
                 focused = await self.page.locator("*:focus").all()
@@ -105,8 +105,6 @@ class BrowserEngine:
                 text_input = focused[0]
                 # clear
                 await text_input.clear()
-                if enter:
-                    text += "\n"
                 await text_input.type(text, delay=100)
             case ScrollCommand(direction):
                 magnitude = self.viewport_size["height"]
@@ -126,8 +124,10 @@ class BrowserEngine:
             "(document.documentElement.scrollTop + document.body.scrollTop) / (document.documentElement.scrollHeight - document.documentElement.clientHeight) * 100"
         )
 
-    async def user_friendly_observation(self) -> str:        
-        content, _ = await process(self.page, self.cdpsession)
+    async def user_friendly_observation(self) -> str:
+        self.last_observation = await process(self.page, self.cdpsession)
+        
+        content = obs_nodes_to_str(self.last_observation)
 
         url_text = f"Viewing URL: {self.page.url }"
 
